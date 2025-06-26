@@ -1,0 +1,362 @@
+---
+title: "ECN 142 Final Project"
+author: "Jayden Kwong"
+date: "2025-03-06"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Import Libraries
+```{r}
+library(leaps)
+library(glmnet)
+library(caret)
+library(corrplot)
+```
+
+```{r}
+data <- read.csv("telecom_churn.csv")
+data <- na.omit(data)
+set.seed(123)
+```
+
+```{r}
+# Set graphical layout to display multiple plots
+par(mfrow = c(2, 2))  # Adjust rows and columns based on the number of predictors
+
+# List of predictors to plot
+predictors <- c("AccountWeeks", "ContractRenewal", "DataPlan", "DataUsage", 
+                "CustServCalls", "DayMins", "DayCalls", "MonthlyCharge", 
+                "OverageFee", "RoamMins")
+
+# Loop through each predictor and create a boxplot
+for (var in predictors) {
+  boxplot(data[[var]] ~ data$Churn, 
+          main = paste("Boxplot of", var, "by Churn"),
+          xlab = "Churn (0 = No, 1 = Yes)", 
+          ylab = var, 
+          col = c("blue", "red"))
+}
+```
+# Logistic Regression with all Model
+```{r}
+set.seed(123)
+
+# 80% Train
+trainIndex <- createDataPartition(data$Churn, p = 0.8, list = FALSE)
+trainData <- data[trainIndex, ]
+testData  <- data[-trainIndex, ]
+
+log_model <- glm(Churn ~ ., data = trainData, family = "binomial")
+summary(log_model)
+
+test_pred <- predict(log_model, newdata = testData, type = "response")
+test_class <- ifelse(test_pred > 0.5, 1, 0)
+
+accuracy <- mean(test_class == testData$Churn)
+cat("Logistic Regression Accuracy:", accuracy, "\n")
+```
+
+# Look at Correlation Matrix
+# Polynomial Logistic Regression
+```{r}
+#cor(data)
+corrplot(cor(data))
+```
+
+```{r}
+# Load necessary libraries
+library(splines)
+
+# Fit a logistic regression with polynomial terms for selected variables
+log_poly <- glm(Churn ~ poly(CustServCalls, 2) + poly(OverageFee, 2) + poly(MonthlyCharge, 2) + 
+                ContractRenewal + DataUsage, 
+                family = "binomial", data = trainData)
+
+summary(log_poly)
+
+# Predict probabilities on the test set
+pred_probs <- predict(log_poly, newdata = testData, type = "response")
+
+# Convert probabilities into binary predictions (Threshold = 0.5)
+pred_labels <- ifelse(pred_probs > 0.5, 1, 0)
+
+# Compute Accuracy
+accuracy <- mean(pred_labels == testData$Churn)
+print(paste("Model Accuracy:", round(accuracy, 4)))
+```
+
+# Variable Selection (Best Subset Selecion)
+```{r}
+best_subset <- regsubsets(Churn ~., data= data, nvmax = 10)
+subset_summary <- summary(best_subset)
+
+best_adj <- which.max(subset_summary$adjr2)
+best_cp <- which.min(subset_summary$cp)
+best_bic <- which.min(subset_summary$bic)
+
+best_model_adj <- coef(best_subset, best_adj)
+best_model_cp <- coef(best_subset, best_cp)
+best_model_bic <- coef(best_subset, best_bic)
+
+print(best_model_adj)
+print(best_model_cp)
+print(best_model_bic) # Use BIC
+```
+
+# Variable Selection (Forward Step Selection)
+```{r}
+regfit.fwd <- regsubsets(Churn ~ ., data = data, nvmax = 10, method = "forward")
+fwd_summary <- summary(regfit.fwd)
+
+fwd_adj <- which.max(fwd_summary$adjr2)  
+fwd_cp <- which.min(fwd_summary$cp)     
+fwd_bic <- which.min(fwd_summary$bic)   
+
+fwd_model_adj <- coef(regfit.fwd, fwd_adj)
+fwd_model_cp <- coef(regfit.fwd, fwd_cp)
+fwd_model_bic <- coef(regfit.fwd, fwd_bic)
+
+print(fwd_model_adj)
+print(fwd_model_cp)
+print(fwd_model_bic) # Use BIC
+```
+
+# Variable Selection (LASSO)
+```{r}
+library(glmnet)
+x <- model.matrix(Churn ~ ., data = data)[,-1]  
+y <- data$Churn
+lasso_cv <- cv.glmnet(x, y, alpha = 1, family = "binomial")
+plot(lasso_cv)
+
+best_lambda <- lasso_cv$lambda.min
+print(best_lambda)
+
+lasso_coef <-coef(lasso_cv, s = "lambda.min")
+print(lasso_coef)
+
+lasso_predictions <- predict(lasso_cv, newx = x, s = "lambda.min", type = "response")
+pred_class <- ifelse(lasso_predictions > 0.5, 1, 0)
+lasso_accuracy <- mean(pred_class == y)
+lasso_accuracy
+```
+
+# Comparing each Models
+```{r}
+set.seed(123)
+
+# Split into training (80%) and test (20%)
+trainIndex <- createDataPartition(data$Churn, p = 0.8, list = FALSE)
+trainData <- data[trainIndex, ]
+testData  <- data[-trainIndex, ]
+
+# Train Logistic Regression using Best Subset Features
+selected_features_subset <- names(coef(best_subset, best_bic))[-1]
+log_model_subset <- glm(Churn ~ ., data = trainData[, c("Churn", selected_features_subset)], family = "binomial")
+
+# Train Logistic Regression using Forward Selection Features
+selected_features_fwd <- names(coef(best_subset, fwd_bic))[-1]
+log_model_fwd <- glm(Churn ~ ., data = trainData[, c("Churn", selected_features_fwd)], family = "binomial")
+
+# Train Logistic Regression using LASSO Features
+selected_features_lasso <- rownames(lasso_coef)[lasso_coef[,1] != 0][-1]  # Remove Intercept
+log_model_lasso <- glm(Churn ~ ., data = trainData[, c("Churn", selected_features_lasso)], family = "binomial")
+
+
+
+# Make Predictions on Test Data
+pred_subset <- predict(log_model_subset, newdata = testData, type = "response")
+pred_fwd <- predict(log_model_fwd, newdata = testData, type = "response")
+pred_lasso <- predict(log_model_lasso, newdata = testData, type = "response")
+
+# Convert Probabilities to Binary (0 or 1)
+pred_class_subset <- ifelse(pred_subset > 0.5, 1, 0)
+pred_class_fwd <- ifelse(pred_fwd > 0.5, 1, 0)
+pred_class_lasso <- ifelse(pred_lasso > 0.5, 1, 0)
+
+# Compute Accuracy
+acc_subset <- mean(pred_class_subset == testData$Churn)
+acc_fwd <- mean(pred_class_fwd == testData$Churn)
+acc_lasso <- mean(pred_class_lasso == testData$Churn)
+
+# Accuracy Results
+cat("Best Subset Selection Accuracy:", acc_subset, "\n")
+cat("Forward Selection Accuracy:", acc_fwd, "\n")
+cat("LASSO Accuracy:", acc_lasso, "\n")
+```
+
+```{r}
+regfit.fwd <- regsubsets(Churn ~ ., data = data, nvmax = 10, method = "forward")
+fwd_summary <- summary(regfit.fwd)
+
+best_model_size_fwd <- which.min(fwd_summary$bic)
+selected_features_fwd <- names(coef(regfit.fwd, best_model_size_fwd))[-1]
+
+# Selected Features
+cat("Stepwise Selected Features:\n")
+print(selected_features_fwd)
+
+# Prepare predictor and response
+x <- model.matrix(Churn ~ ., data = data[, c("Churn", selected_features_fwd)])[,-1]
+y <- as.numeric(as.character(data$Churn)) 
+
+# Perform LASSO with Cross-Validation
+set.seed(123)
+lasso_cv <- cv.glmnet(x, y, alpha = 1, family = "binomial")
+
+# Best lambda
+best_lambda <- lasso_cv$lambda.min
+cat("Best Lambda for LASSO:", best_lambda, "\n")
+
+# Coefficients after choosing lambda
+lasso_coef <- coef(lasso_cv, s = "lambda.min")
+print(lasso_coef)
+
+selected_features_lasso <- rownames(lasso_coef)[lasso_coef[,1] != 0][-1]
+
+# Final Model
+final_model_lasso <- glm(Churn ~ ., data = data[, c("Churn", selected_features_lasso)], family = "binomial")
+
+summary(final_model_lasso)
+
+
+
+# Evaluate Accuracy
+# Split into training & test sets
+set.seed(123)
+trainIndex <- createDataPartition(data$Churn, p = 0.8, list = FALSE)
+trainData <- data[trainIndex, ]
+testData  <- data[-trainIndex, ]
+
+# Train model on training data
+final_model_lasso <- glm(Churn ~ ., data = trainData[, c("Churn", selected_features_lasso)], family = "binomial")
+
+# Predict on test data
+test_pred <- predict(final_model_lasso, newdata = testData, type = "response")
+
+# Convert probabilities to binary (0 or 1)
+test_class <- ifelse(test_pred > 0.5, 1, 0)
+
+# Compute Accuracy
+final_accuracy <- mean(test_class == testData$Churn)
+cat("Final Model Accuracy After Stepwise + LASSO:", final_accuracy, "\n")
+```
+
+# Check for Multicollinearity
+```{r}
+library(corrplot)
+numeric_features <- trainData[, selected_features_lasso]  
+numeric_features <- numeric_features[, sapply(numeric_features, is.numeric)]
+corr_matrix <- cor(numeric_features, use = "complete.obs")
+corrplot(corr_matrix, method = "color", type = "upper", 
+         tl.cex = 0.8, number.cex = 0.7)
+```
+
+# PCA
+```{r}
+# Standardize features before PCA (important for variance scaling)
+preProc <- preProcess(trainData[, selected_features_lasso], method = "pca", pcaComp = 5)
+
+# Transform data using PCA
+train_pca <- predict(preProc, trainData[, selected_features_lasso])
+test_pca <- predict(preProc, testData[, selected_features_lasso])
+
+# Add the target variable back
+train_pca$Churn <- trainData$Churn
+test_pca$Churn <- testData$Churn
+
+# Fit logistic regression on PCA-transformed data
+pca_log_model <- glm(Churn ~ ., data = train_pca, family = "binomial")
+
+# Summary of PCA-based logistic model
+summary(pca_log_model)
+
+# Predict probabilities
+pca_pred_probs <- predict(pca_log_model, newdata = test_pca, type = "response")
+
+# Convert to class predictions (Threshold = 0.5)
+pca_pred_labels <- ifelse(pca_pred_probs > 0.5, 1, 0)
+
+# Compute accuracy
+pca_accuracy <- mean(pca_pred_labels == test_pca$Churn)
+print(paste("PCA Logistic Regression Accuracy:", round(pca_accuracy, 4)))
+```
+
+```{r}
+# Load necessary library
+library(ggplot2)
+
+# Perform PCA on scaled data to extract variance information
+pca_result <- prcomp(trainData[, selected_features_lasso], center = TRUE, scale. = TRUE)
+
+# Calculate proportion of variance explained
+pve <- pca_result$sdev^2 / sum(pca_result$sdev^2)
+
+# Create a scree plot using ggplot2
+scree_plot <- ggplot(data = data.frame(PC = 1:length(pve), Variance = pve), aes(x = PC, y = Variance)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  geom_line(aes(y = cumsum(Variance)), color = "red", size = 1) + # Cumulative variance
+  geom_point(aes(y = cumsum(Variance)), color = "red", size = 2) +
+  labs(title = "Scree Plot of PCA", x = "Principal Component", y = "Proportion of Variance Explained") +
+  theme_minimal()
+
+# Display scree plot
+print(scree_plot)
+```
+
+# Classification Tree
+```{r}
+library(tree)
+library(rpart)
+library(rpart.plot)
+library(caret)  # For model evaluation
+
+set.seed(42)
+train_index <- sample(1:nrow(trainData), size = 0.7 * nrow(trainData))  
+valid_index <- setdiff(1:nrow(trainData), train_index)  
+
+# Define training and validation datasets
+train <- trainData[train_index, c("Churn", selected_features_lasso)]
+valid <- trainData[valid_index, c("Churn", selected_features_lasso)]
+
+# Train the Classification Tree
+tree_model <- rpart(Churn ~ ., data = train, method = "class")
+
+printcp(tree_model)
+
+optimal_cp <- tree_model$cptable[which.min(tree_model$cptable[, "xerror"]), "CP"]
+print(paste("Optimal CP:", optimal_cp))
+
+pruned_tree <- prune(tree_model, cp = optimal_cp)
+rpart.plot(pruned_tree, type = 3, fallen.leaves = TRUE, cex = 0.8)
+
+conf_matrix <- confusionMatrix(predict(pruned_tree, newdata = testData, type = "class"), as.factor(testData$Churn))
+print(conf_matrix)
+```
+
+
+```{r}
+X1 <- 1
+X2 <- 1
+X3 <- 3
+X4 <- 200
+X5 <- 8
+X6 <- 10
+
+B0 <- -0.089255626
+B1 <- -0.299317791
+B2 <- -0.079761287
+B3 <- 0.058217071
+B4 <- 0.001263361
+B5 <- 0.012817028
+B6 <- 0.007776409
+
+y <- B0 + (X1*B1) + (X2*B2) + (X3*B3) + (X4*B4) + (X5*B5) + (X6*B6)
+(exp(y))/(1 + exp(y))
+```
