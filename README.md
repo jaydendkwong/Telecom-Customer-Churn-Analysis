@@ -1,4 +1,4 @@
-# Telecom Customer Churn Analysis – ECN 142 Final Project
+# Telecom Customer Churn Analysis
 ## Overview
 This project was completed as part of my ECN 142 (Economics & Business Data Analytics) course at UC Davis. The goal was to explore customer churn in the telecom industry by applying various econometric modeling and variable selection techniques to a real-world dataset.
 
